@@ -8,7 +8,6 @@
 import Foundation
 
 public struct MZRSA {
-    
     //MARK:-  encrypt or decrypt by SecKey String
     
     /// 使用私钥字符串加密Data
@@ -365,7 +364,7 @@ public struct MZRSA {
         
         let swqiod:[CUnsignedChar] = [0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
                                       0x01, 0x05, 0x00]
-        if (memcmp(&cKey[index], swqiod, 15) == 1) {
+        if Array(cKey[index..<index+15]) != swqiod {
             return nil
         }
         
@@ -554,41 +553,53 @@ public struct MZRSA {
     }
     
     private static func encrypt(_ data: Data, with secKey: SecKey, and isSign: Bool) -> Data? {
-        var srcbuf = dataToBytes(data)
-        let srclen = data.count
+        let totalLen = data.count
+        let key_size = SecKeyGetBlockSize(secKey) * MemoryLayout<UInt8>.size
+        let block_size = key_size - 11
+        var outbuf = [UInt8](repeating: 0, count: key_size)
         
-        let block_size = SecKeyGetBlockSize(secKey) * MemoryLayout<UInt8>.size
-        var outbuf = [UInt8](repeating: 0, count: block_size)
-        let src_block_size = block_size - 11
-        
-        var ret: Data? = Data.init()
-        var index = 0
-        while index < srclen {
-            var data_len = srclen - index
-            if data_len > src_block_size {
-                data_len = src_block_size
-            }
-            
-            var outlen = block_size
-            var status = noErr
-            
-            let ptr = withUnsafePointer(to: &srcbuf[index]) { $0 }
-            if isSign {
-                status = SecKeyRawSign(secKey, SecPadding.PKCS1, ptr, data_len, &outbuf, &outlen)
-            } else {
-                status = SecKeyEncrypt(secKey, SecPadding.PKCS1, ptr, data_len, &outbuf, &outlen)
-            }
-            if status != 0 {
-                ret = nil
-                break
-            } else {
-                ret!.append(contentsOf: outbuf[0..<outlen])
-            }
-            
-            index += src_block_size
+        var blockCount = totalLen / block_size
+        if  totalLen % block_size > 0, totalLen > 0 {
+            blockCount += 1
         }
-        
-        return ret
+        var resultData = Data()
+        for i in 0..<blockCount {
+            let loc = i * block_size
+            // 分段长度
+            let segLen = i == blockCount - 1 ? (totalLen - loc) : block_size
+             
+            // 分段数据
+            let segData = data.subdata(in: loc..<loc + segLen)
+            var segBytes = dataToBytes(segData)
+            
+            //开始加密
+            var index = 0
+            while index < segData.count {
+                var data_len = segLen - index
+                if data_len > block_size {
+                    data_len = block_size
+                }
+                
+                var outlen = key_size
+                var status = noErr
+                
+                let ptr = withUnsafePointer(to: &segBytes[index]) { $0 }
+                if isSign {
+                    status = SecKeyRawSign(secKey, SecPadding.PKCS1, ptr, data_len, &outbuf, &outlen)
+                } else {
+                    status = SecKeyEncrypt(secKey, SecPadding.PKCS1, ptr, data_len, &outbuf, &outlen)
+                }
+                if status != 0 {
+                    return nil
+                } else {
+                    //拼接
+                    resultData.append(contentsOf: outbuf[0..<outlen])
+                }
+                index += segLen
+            }
+        }
+         
+        return resultData
     }
     
     private static func decrypt(_ data: Data, with secKey: SecKey) -> Data? {
